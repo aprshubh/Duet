@@ -1,0 +1,90 @@
+:root {
+  /* Typography */
+  --font-main: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  /* Default Dark Mode (Teams / Studio Slate Layered Palette) */
+  --bg-root: #14171d;
+  --bg-mesh: radial-gradient(ellipse 80% 50% at 50% -10%, rgba(92, 99, 112, 0.12), transparent 70%);
+  --bg-surface: #1b1e26;
+  --bg-panel: #20242e;
+  --bg-card: #262b37;
+  --bg-input: #171a22;
+  --bg-hover: #313745;
+
+  --card-glass: rgba(33, 38, 48, 0.82);
+  --header-glass: rgba(22, 25, 33, 0.88);
+  --chat-glass: rgba(27, 31, 40, 0.92);
+
+  --border-subtle: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.18);
+  --border-focus: rgba(255, 255, 255, 0.45);
+
+  --text-primary: #ffffff;
+  --text-secondary: #9aa2b1;
+  --text-muted: #6b7280;
+
+  --accent: #ffffff;
+  --accent-contrast: #14171d;
+  --accent-hover: #e5e7eb;
+
+  --btn-primary-bg: #ffffff;
+  --btn-primary-text: #14171d;
+  --btn-primary-hover: #e5e7eb;
+  --btn-primary-glow: 0 4px 18px rgba(0, 0, 0, 0.45);
+
+  --glow-accent: rgba(255, 255, 255, 0.08);
+
+  --status-online: #10b981;
+  --status-warn: #f59e0b;
+  --status-error: #ef4444;
+
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.65);
+  --shadow-popup: 0 20px 48px -8px rgba(0, 0, 0, 0.8);
+
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-full: 9999px;
+
+  --transition-fast: 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+  --transition-normal: 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  --transition-drawer: 0.35s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* ========================================================== */
+/* DARK SLATE THEME (Permanent Cinema Studio Palette)        */
+/* ========================================================== */
+body, body.theme-dark {
+  --bg-root: #14171d;
+  --bg-mesh: radial-gradient(ellipse 80% 50% at 50% -10%, rgba(92, 99, 112, 0.12), transparent 70%);
+  --bg-surface: #1b1e26;
+  --bg-panel: #20242e;
+  --bg-card: #262b37;
+  --bg-input: #171a22;
+  --bg-hover: #313745;
+
+  --card-glass: rgba(33, 38, 48, 0.82);
+  --header-glass: rgba(22, 25, 33, 0.88);
+  --chat-glass: rgba(27, 31, 40, 0.92);
+
+  --border-subtle: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.18);
+  --border-focus: rgba(255, 255, 255, 0.45);
+
+  --text-primary: #ffffff;
+  --text-secondary: #9aa2b1;
+  --text-muted: #6b7280;
+
+  --accent: #ffffff;
+  --accent-contrast: #14171d;
+  --accent-hover: #e5e7eb;
+
+  --btn-primary-bg: #ffffff;
+  --btn-primary-text: #14171d;
+  --btn-primary-hover: #e5e7eb;
+  --btn-primary-glow: 0 4px 18px rgba(0, 0, 0, 0.45);
+  --glow-accent: rgba(255, 255, 255, 0.08);
+}
