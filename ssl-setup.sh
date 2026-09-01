@@ -1,10 +1,21 @@
-﻿#!/usr/bin/env bash
+#!/bin/bash
 set -e
+
+echo "🛑 Freeing ports 80 and 8080..."
+sudo fuser -k 80/tcp 8080/tcp 2>/dev/null || true
+sudo pkill -9 server 2>/dev/null || true
+sleep 1
+
+echo "🚀 Starting Go backend on port 8080..."
+cd /home/ubuntu/duet
+nohup ./backend/server > /home/ubuntu/duet-backend.log 2>&1 &
+sleep 1
 
 echo "🔒 Configuring Nginx reverse proxy for duett.duckdns.org..."
 sudo bash -c 'cat > /etc/nginx/sites-available/default << "EOF"
 server {
-    listen 80;
+    listen 80 default_server;
+    listen [::]:80 default_server;
     server_name duett.duckdns.org;
 
     location / {
@@ -23,9 +34,9 @@ EOF'
 echo "🔄 Restarting Nginx..."
 sudo systemctl restart nginx
 
-echo "✨ Requesting Let's Encrypt Free SSL Certificate..."
+echo "✨ Requesting Let'\''s Encrypt Free SSL Certificate..."
 sudo certbot --nginx -d duett.duckdns.org --non-interactive --agree-tos --register-unsafely-without-email --redirect
 
 echo ""
-echo "🎉 SSL Certificate Successfully Installed!"
+echo "🎉 SUCCESS! SSL Certificate Installed!"
 echo "🌐 Access your secure app at: https://duett.duckdns.org"
