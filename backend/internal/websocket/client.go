@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"sync"
 	"time"
@@ -31,7 +32,7 @@ type Client struct {
 	mu sync.Mutex
 }
 
-// readPump pumps messages from the websocket connection to the hub
+// ReadPump pumps messages from the websocket connection to the hub
 func (c *Client) ReadPump() {
 	defer func() {
 		c.Hub.Unregister <- c
@@ -54,7 +55,7 @@ func (c *Client) ReadPump() {
 			break
 		}
 
-		var wsMsg model.WSMessage
+		var wsMsg model.WSIncomingMessage
 		if err := json.Unmarshal(message, &wsMsg); err != nil {
 			log.Printf("invalid json: %v", err)
 			continue
@@ -66,7 +67,7 @@ func (c *Client) ReadPump() {
 	}
 }
 
-// writePump pumps messages from the hub to the websocket connection
+// WritePump pumps messages from the hub to the websocket connection
 func (c *Client) WritePump() {
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {
@@ -109,15 +110,23 @@ func (c *Client) WritePump() {
 	}
 }
 
+// SendRaw queues raw serialized bytes to the client channel; evicts if client is stalled
+func (c *Client) SendRaw(data []byte) error {
+	select {
+	case c.Send <- data:
+		return nil
+	default:
+		log.Printf("warning: client %s buffer full, disconnecting stalled client", c.UserID)
+		c.Conn.Close()
+		return errors.New("client buffer overflow")
+	}
+}
+
+// SendJSON marshals an arbitrary struct and queues it to the client
 func (c *Client) SendJSON(v interface{}) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	select {
-	case c.Send <- data:
-	default:
-		log.Printf("client %s buffer full, message dropped", c.UserID)
-	}
-	return nil
+	return c.SendRaw(data)
 }

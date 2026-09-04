@@ -7,21 +7,18 @@ import { UserAvatar } from '../components/UserAvatar';
 interface ChatPanelProps {
   currentUser: User;
   wsClient: WebSocketClient | null;
-  initialMessages?: Message[];
+  messages: Message[];
   isOpen: boolean;
   onClose: () => void;
-  onNewMessage?: (msg: Message) => void;
 }
 
 export const ChatPanel: React.FC<ChatPanelProps> = ({
   currentUser,
   wsClient,
-  initialMessages = [],
+  messages,
   isOpen,
   onClose,
-  onNewMessage,
 }) => {
-  const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [inputMessage, setInputMessage] = useState('');
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -32,25 +29,21 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   };
 
   useEffect(() => {
-    if (initialMessages.length > 0) {
-      setMessages(initialMessages);
-    }
-  }, [initialMessages]);
-
-  useEffect(() => {
     if (isOpen) {
       scrollToBottom();
     }
   }, [messages, isOpen]);
 
   useEffect(() => {
-    if (!wsClient) return;
+    return () => {
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+    };
+  }, []);
 
-    const unsubMsg = wsClient.on('CHAT_MESSAGE', (msg) => {
-      const chatMsg = msg.payload as Message;
-      setMessages((prev) => [...prev, chatMsg]);
-      onNewMessage?.(chatMsg);
-    });
+  useEffect(() => {
+    if (!wsClient) return;
 
     const unsubTyping = wsClient.on('TYPING', (msg) => {
       const payload = msg.payload as { isTyping: boolean; userName: string };
@@ -62,10 +55,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     });
 
     return () => {
-      unsubMsg();
       unsubTyping();
     };
-  }, [wsClient, onNewMessage]);
+  }, [wsClient]);
 
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
@@ -98,8 +90,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     }
   };
 
+  const userMessages = messages.filter((m) => !m.isSystem);
+
   return (
-    <div className={`chat-drawer ${!isOpen ? 'collapsed' : ''}`}>
+    <div className={`chat-drawer ${!isOpen ? 'collapsed' : ''}`} aria-label="Room Chat">
       {/* Header with slide/collapse toggle */}
       <div className="chat-header">
         <div className="chat-header-left">
@@ -110,7 +104,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           type="button"
           onClick={onClose}
           className="chat-close-btn"
-          title="Slide chat away"
+          title="Close chat drawer"
+          aria-label="Close chat drawer"
         >
           <ChevronRight size={18} />
         </button>
@@ -118,16 +113,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
       {/* Messages Scroll Area */}
       <div className="messages-container">
-        {messages.length === 0 ? (
+        {userMessages.length === 0 ? (
           <div className="empty-chat">
             <p>No messages yet</p>
           </div>
         ) : (
-          messages.map((msg) => {
-            if (msg.isSystem) {
-              return null;
-            }
-
+          userMessages.map((msg) => {
             const isMe = msg.userId === currentUser.id;
 
             return (
@@ -159,7 +150,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
         {/* Typing indicator */}
         {typingUsers.length > 0 && (
-          <div className="typing-indicator">
+          <div className="typing-indicator" aria-live="polite">
             <span className="typing-dot" />
             <span>{typingUsers.join(', ')} typing...</span>
           </div>
@@ -177,11 +168,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             onChange={handleInputChange}
             placeholder="Type a message..."
             className="form-input chat-input-field"
+            aria-label="Chat message"
           />
           <button
             type="submit"
             disabled={!inputMessage.trim()}
             className="chat-send-btn"
+            aria-label="Send message"
           >
             <Send size={14} />
           </button>

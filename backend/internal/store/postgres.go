@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -21,7 +22,16 @@ func NewPostgresStore(connStr string) (*PostgresStore, error) {
 		return nil, fmt.Errorf("failed to open postgres: %w", err)
 	}
 
-	if err := db.Ping(); err != nil {
+	// Production connection pool tuning
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(10)
+	db.SetConnMaxLifetime(15 * time.Minute)
+	db.SetConnMaxIdleTime(5 * time.Minute)
+
+	pingCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := db.PingContext(pingCtx); err != nil {
 		return nil, fmt.Errorf("failed to ping postgres: %w", err)
 	}
 
@@ -88,7 +98,7 @@ func (p *PostgresStore) initSchema() error {
 	return err
 }
 
-func (p *PostgresStore) CreateUser(u *model.User) error {
+func (p *PostgresStore) CreateUser(ctx context.Context, u *model.User) error {
 	var emailVal interface{}
 	if u.Email != "" {
 		emailVal = u.Email
@@ -97,15 +107,15 @@ func (p *PostgresStore) CreateUser(u *model.User) error {
 	INSERT INTO users (id, name, email, avatar, created_at)
 	VALUES ($1, $2, $3, $4, $5)
 	ON CONFLICT (id) DO UPDATE SET name = $2, email = COALESCE($3, users.email), avatar = $4;`
-	_, err := p.db.Exec(query, u.ID, u.Name, emailVal, u.Avatar, u.CreatedAt)
+	_, err := p.db.ExecContext(ctx, query, u.ID, u.Name, emailVal, u.Avatar, u.CreatedAt)
 	return err
 }
 
-func (p *PostgresStore) GetUserByID(id string) (*model.User, error) {
+func (p *PostgresStore) GetUserByID(ctx context.Context, id string) (*model.User, error) {
 	u := &model.User{}
 	var email sql.NullString
 	query := `SELECT id, name, email, avatar, created_at FROM users WHERE id = $1`
-	err := p.db.QueryRow(query, id).Scan(&u.ID, &u.Name, &email, &u.Avatar, &u.CreatedAt)
+	err := p.db.QueryRowContext(ctx, query, id).Scan(&u.ID, &u.Name, &email, &u.Avatar, &u.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
@@ -118,14 +128,14 @@ func (p *PostgresStore) GetUserByID(id string) (*model.User, error) {
 	return u, nil
 }
 
-func (p *PostgresStore) GetUserByEmail(email string) (*model.User, error) {
+func (p *PostgresStore) GetUserByEmail(ctx context.Context, email string) (*model.User, error) {
 	if email == "" {
 		return nil, ErrNotFound
 	}
 	u := &model.User{}
 	var emailVal sql.NullString
 	query := `SELECT id, name, email, avatar, created_at FROM users WHERE email = $1`
-	err := p.db.QueryRow(query, email).Scan(&u.ID, &u.Name, &emailVal, &u.Avatar, &u.CreatedAt)
+	err := p.db.QueryRowContext(ctx, query, email).Scan(&u.ID, &u.Name, &emailVal, &u.Avatar, &u.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
@@ -138,61 +148,61 @@ func (p *PostgresStore) GetUserByEmail(email string) (*model.User, error) {
 	return u, nil
 }
 
-func (p *PostgresStore) CreateRoom(r *model.Room) error {
+func (p *PostgresStore) CreateRoom(ctx context.Context, r *model.Room) error {
 	query := `INSERT INTO rooms (id, code, host_id, only_host_can_control, created_at) VALUES ($1, $2, $3, $4, $5)`
-	_, err := p.db.Exec(query, r.ID, r.Code, r.HostID, r.OnlyHostCanControl, r.CreatedAt)
+	_, err := p.db.ExecContext(ctx, query, r.ID, r.Code, r.HostID, r.OnlyHostCanControl, r.CreatedAt)
 	return err
 }
 
-func (p *PostgresStore) GetRoomByCode(code string) (*model.Room, error) {
+func (p *PostgresStore) GetRoomByCode(ctx context.Context, code string) (*model.Room, error) {
 	r := &model.Room{}
 	query := `SELECT id, code, host_id, only_host_can_control, created_at FROM rooms WHERE code = $1`
-	err := p.db.QueryRow(query, code).Scan(&r.ID, &r.Code, &r.HostID, &r.OnlyHostCanControl, &r.CreatedAt)
+	err := p.db.QueryRowContext(ctx, query, code).Scan(&r.ID, &r.Code, &r.HostID, &r.OnlyHostCanControl, &r.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
 	return r, err
 }
 
-func (p *PostgresStore) GetRoomByID(id string) (*model.Room, error) {
+func (p *PostgresStore) GetRoomByID(ctx context.Context, id string) (*model.Room, error) {
 	r := &model.Room{}
 	query := `SELECT id, code, host_id, only_host_can_control, created_at FROM rooms WHERE id = $1`
-	err := p.db.QueryRow(query, id).Scan(&r.ID, &r.Code, &r.HostID, &r.OnlyHostCanControl, &r.CreatedAt)
+	err := p.db.QueryRowContext(ctx, query, id).Scan(&r.ID, &r.Code, &r.HostID, &r.OnlyHostCanControl, &r.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
 	return r, err
 }
 
-func (p *PostgresStore) UpdateRoomSettings(roomID string, onlyHostCanControl bool) error {
+func (p *PostgresStore) UpdateRoomSettings(ctx context.Context, roomID string, onlyHostCanControl bool) error {
 	query := `UPDATE rooms SET only_host_can_control = $1 WHERE id = $2`
-	_, err := p.db.Exec(query, onlyHostCanControl, roomID)
+	_, err := p.db.ExecContext(ctx, query, onlyHostCanControl, roomID)
 	return err
 }
 
-func (p *PostgresStore) AddMember(m *model.RoomMember) error {
+func (p *PostgresStore) AddMember(ctx context.Context, m *model.RoomMember) error {
 	query := `
 	INSERT INTO room_members (room_id, user_id, is_host, is_online, joined_at)
 	VALUES ($1, $2, $3, $4, $5)
 	ON CONFLICT (room_id, user_id) DO UPDATE SET is_online = $4;`
-	_, err := p.db.Exec(query, m.RoomID, m.UserID, m.IsHost, m.IsOnline, m.JoinedAt)
+	_, err := p.db.ExecContext(ctx, query, m.RoomID, m.UserID, m.IsHost, m.IsOnline, m.JoinedAt)
 	return err
 }
 
-func (p *PostgresStore) RemoveMember(roomID, userID string) error {
+func (p *PostgresStore) RemoveMember(ctx context.Context, roomID, userID string) error {
 	query := `DELETE FROM room_members WHERE room_id = $1 AND user_id = $2`
-	_, err := p.db.Exec(query, roomID, userID)
+	_, err := p.db.ExecContext(ctx, query, roomID, userID)
 	return err
 }
 
-func (p *PostgresStore) GetRoomMembers(roomID string) ([]model.RoomMember, error) {
+func (p *PostgresStore) GetRoomMembers(ctx context.Context, roomID string) ([]model.RoomMember, error) {
 	query := `
 	SELECT rm.room_id, rm.user_id, rm.is_host, rm.is_online, rm.joined_at,
 	       u.name, u.email, u.avatar, u.created_at
 	FROM room_members rm
 	JOIN users u ON rm.user_id = u.id
 	WHERE rm.room_id = $1`
-	rows, err := p.db.Query(query, roomID)
+	rows, err := p.db.QueryContext(ctx, query, roomID)
 	if err != nil {
 		return nil, err
 	}
@@ -217,30 +227,30 @@ func (p *PostgresStore) GetRoomMembers(roomID string) ([]model.RoomMember, error
 	return members, nil
 }
 
-func (p *PostgresStore) UpdateMemberOnline(roomID, userID string, isOnline bool) error {
+func (p *PostgresStore) UpdateMemberOnline(ctx context.Context, roomID, userID string, isOnline bool) error {
 	query := `UPDATE room_members SET is_online = $1 WHERE room_id = $2 AND user_id = $3`
-	_, err := p.db.Exec(query, isOnline, roomID, userID)
+	_, err := p.db.ExecContext(ctx, query, isOnline, roomID, userID)
 	return err
 }
 
-func (p *PostgresStore) SaveMessage(msg *model.Message) error {
+func (p *PostgresStore) SaveMessage(ctx context.Context, msg *model.Message) error {
 	if msg.CreatedAt.IsZero() {
 		msg.CreatedAt = time.Now()
 	}
 	query := `INSERT INTO messages (id, room_id, user_id, user_name, avatar, message, is_system, created_at)
 	          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
-	_, err := p.db.Exec(query, msg.ID, msg.RoomID, msg.UserID, msg.UserName, msg.Avatar, msg.Message, msg.IsSystem, msg.CreatedAt)
+	_, err := p.db.ExecContext(ctx, query, msg.ID, msg.RoomID, msg.UserID, msg.UserName, msg.Avatar, msg.Message, msg.IsSystem, msg.CreatedAt)
 	return err
 }
 
-func (p *PostgresStore) GetRecentMessages(roomID string, limit int) ([]model.Message, error) {
+func (p *PostgresStore) GetRecentMessages(ctx context.Context, roomID string, limit int) ([]model.Message, error) {
 	query := `
 	SELECT id, room_id, user_id, user_name, avatar, message, is_system, created_at
 	FROM messages
 	WHERE room_id = $1
 	ORDER BY created_at DESC
 	LIMIT $2`
-	rows, err := p.db.Query(query, roomID, limit)
+	rows, err := p.db.QueryContext(ctx, query, roomID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -262,11 +272,11 @@ func (p *PostgresStore) GetRecentMessages(roomID string, limit int) ([]model.Mes
 	return msgs, nil
 }
 
-func (p *PostgresStore) GetVideoState(roomID string) (*model.VideoState, error) {
+func (p *PostgresStore) GetVideoState(ctx context.Context, roomID string) (*model.VideoState, error) {
 	state := &model.VideoState{}
 	var changedBy sql.NullString
 	query := `SELECT room_id, playing, position, rate, updated_at, changed_by FROM video_states WHERE room_id = $1`
-	err := p.db.QueryRow(query, roomID).Scan(&state.RoomID, &state.Playing, &state.Position, &state.Rate, &state.UpdatedAt, &changedBy)
+	err := p.db.QueryRowContext(ctx, query, roomID).Scan(&state.RoomID, &state.Playing, &state.Position, &state.Rate, &state.UpdatedAt, &changedBy)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
@@ -279,12 +289,12 @@ func (p *PostgresStore) GetVideoState(roomID string) (*model.VideoState, error) 
 	return state, nil
 }
 
-func (p *PostgresStore) SetVideoState(state *model.VideoState) error {
+func (p *PostgresStore) SetVideoState(ctx context.Context, state *model.VideoState) error {
 	query := `
 	INSERT INTO video_states (room_id, playing, position, rate, updated_at, changed_by)
 	VALUES ($1, $2, $3, $4, $5, $6)
 	ON CONFLICT (room_id) DO UPDATE
 	SET playing = $2, position = $3, rate = $4, updated_at = $5, changed_by = $6;`
-	_, err := p.db.Exec(query, state.RoomID, state.Playing, state.Position, state.Rate, state.UpdatedAt, state.ChangedBy)
+	_, err := p.db.ExecContext(ctx, query, state.RoomID, state.Playing, state.Position, state.Rate, state.UpdatedAt, state.ChangedBy)
 	return err
 }

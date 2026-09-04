@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"context"
 	"encoding/json"
 	"html"
 	"log"
@@ -11,27 +12,41 @@ import (
 	"watchparty-backend/internal/video"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
+
+// RedisPubSubEnvelope wraps room broadcasts to filter self-published messages
+type RedisPubSubEnvelope struct {
+	OriginNode string `json:"originNode"`
+	RoomID     string `json:"roomId"`
+	Data       []byte `json:"data"`
+}
 
 // Hub maintains the set of active clients and broadcasts messages to rooms
 type Hub struct {
 	store         store.Store
+	redisStore    *store.RedisStore
 	syncer        *video.VideoSyncer
 	rooms         map[string]map[*Client]bool // roomID -> set of clients
+	roomSubs      map[string]*redis.PubSub    // roomID -> redis pubsub
 	roomVideoURLs map[string]*model.VideoURLPayload
 	Register      chan *Client
 	Unregister    chan *Client
+	instanceID    string
 	mu            sync.RWMutex
 }
 
-func NewHub(s store.Store, v *video.VideoSyncer) *Hub {
+func NewHub(s store.Store, r *store.RedisStore, v *video.VideoSyncer) *Hub {
 	return &Hub{
 		store:         s,
+		redisStore:    r,
 		syncer:        v,
 		rooms:         make(map[string]map[*Client]bool),
+		roomSubs:      make(map[string]*redis.PubSub),
 		roomVideoURLs: make(map[string]*model.VideoURLPayload),
 		Register:      make(chan *Client),
 		Unregister:    make(chan *Client),
+		instanceID:    uuid.NewString(),
 	}
 }
 
@@ -49,28 +64,39 @@ func (h *Hub) Run() {
 
 func (h *Hub) registerClient(client *Client) {
 	h.mu.Lock()
+	isFirstInRoom := false
 	if h.rooms[client.RoomID] == nil {
 		h.rooms[client.RoomID] = make(map[*Client]bool)
+		isFirstInRoom = true
 	}
 	h.rooms[client.RoomID][client] = true
+
+	if isFirstInRoom && h.redisStore != nil {
+		h.subscribeRoomRedis(client.RoomID)
+	}
 	h.mu.Unlock()
 
-	// Ensure member exists and is marked online in DB
-	err := h.store.UpdateMemberOnline(client.RoomID, client.UserID, true)
-	if err != nil {
-		user, _ := h.store.GetUserByID(client.UserID)
-		if user == nil {
-			user = &model.User{ID: client.UserID, Name: client.UserName, Avatar: client.Avatar}
+	// Asynchronous DB update to keep Hub event loop non-blocking
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		err := h.store.UpdateMemberOnline(ctx, client.RoomID, client.UserID, true)
+		if err != nil {
+			user, _ := h.store.GetUserByID(ctx, client.UserID)
+			if user == nil {
+				user = &model.User{ID: client.UserID, Name: client.UserName, Avatar: client.Avatar}
+			}
+			_ = h.store.AddMember(ctx, &model.RoomMember{
+				RoomID:   client.RoomID,
+				UserID:   client.UserID,
+				User:     *user,
+				IsHost:   client.IsHost,
+				JoinedAt: time.Now(),
+				IsOnline: true,
+			})
 		}
-		_ = h.store.AddMember(&model.RoomMember{
-			RoomID:   client.RoomID,
-			UserID:   client.UserID,
-			User:     *user,
-			IsHost:   client.IsHost,
-			JoinedAt: time.Now(),
-			IsOnline: true,
-		})
-	}
+	}()
 
 	// Broadcast user join event
 	h.BroadcastToRoom(client.RoomID, &model.WSMessage{
@@ -87,21 +113,22 @@ func (h *Hub) registerClient(client *Client) {
 		},
 	})
 
-	// Send initial state to the newly connected user
-	h.sendInitialRoomState(client)
+	// Send initial room state to newly connected client
+	go h.sendInitialRoomState(client)
 }
 
 func (h *Hub) unregisterClient(client *Client) {
 	h.mu.Lock()
 	userStillConnected := false
+	shouldUnsub := false
 	if roomClients, ok := h.rooms[client.RoomID]; ok {
 		if _, exists := roomClients[client]; exists {
 			delete(roomClients, client)
 			close(client.Send)
 			if len(roomClients) == 0 {
 				delete(h.rooms, client.RoomID)
+				shouldUnsub = true
 			} else {
-				// Check if user has another connection in this room
 				for c := range roomClients {
 					if c.UserID == client.UserID {
 						userStillConnected = true
@@ -111,13 +138,24 @@ func (h *Hub) unregisterClient(client *Client) {
 			}
 		}
 	}
+
+	if shouldUnsub && h.redisStore != nil {
+		if sub, ok := h.roomSubs[client.RoomID]; ok {
+			_ = sub.Close()
+			delete(h.roomSubs, client.RoomID)
+		}
+	}
 	h.mu.Unlock()
 
 	if !userStillConnected {
-		// Mark member offline in DB (do NOT delete so reconnecting/refreshing retains member state)
-		_ = h.store.UpdateMemberOnline(client.RoomID, client.UserID, false)
+		// Asynchronous DB update
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = h.store.UpdateMemberOnline(ctx, client.RoomID, client.UserID, false)
+		}()
 
-		// Broadcast user leave/offline event
+		// Broadcast user leave event
 		h.BroadcastToRoom(client.RoomID, &model.WSMessage{
 			Type:      model.EventUserLeave,
 			RoomID:    client.RoomID,
@@ -130,7 +168,7 @@ func (h *Hub) unregisterClient(client *Client) {
 			},
 		})
 
-		// Clean up voice presence on disconnect
+		// Clean up voice presence
 		h.BroadcastToRoom(client.RoomID, &model.WSMessage{
 			Type:      model.EventVoiceState,
 			RoomID:    client.RoomID,
@@ -146,16 +184,41 @@ func (h *Hub) unregisterClient(client *Client) {
 	}
 }
 
+// subscribeRoomRedis listens for cross-node broadcasts from other backend replicas
+func (h *Hub) subscribeRoomRedis(roomID string) {
+	ctx := context.Background()
+	sub := h.redisStore.SubscribeRoomEvents(ctx, roomID)
+	h.roomSubs[roomID] = sub
+
+	go func() {
+		ch := sub.Channel()
+		for msg := range ch {
+			var env RedisPubSubEnvelope
+			if err := json.Unmarshal([]byte(msg.Payload), &env); err != nil {
+				continue
+			}
+			// Skip events published by this same node (already broadcast locally)
+			if env.OriginNode == h.instanceID {
+				continue
+			}
+			h.BroadcastRawLocally(env.RoomID, "", env.Data)
+		}
+	}()
+}
+
 // sendInitialRoomState provides all needed data when joining or reconnecting
 func (h *Hub) sendInitialRoomState(client *Client) {
-	room, err := h.store.GetRoomByID(client.RoomID)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	room, err := h.store.GetRoomByID(ctx, client.RoomID)
 	if err != nil {
 		return
 	}
 
-	members, _ := h.store.GetRoomMembers(client.RoomID)
-	messages, _ := h.store.GetRecentMessages(client.RoomID, 50)
-	videoState, err := h.store.GetVideoState(client.RoomID)
+	members, _ := h.store.GetRoomMembers(ctx, client.RoomID)
+	messages, _ := h.store.GetRecentMessages(ctx, client.RoomID, 50)
+	videoState, err := h.store.GetVideoState(ctx, client.RoomID)
 	if err != nil {
 		videoState = &model.VideoState{
 			RoomID:    client.RoomID,
@@ -166,7 +229,6 @@ func (h *Hub) sendInitialRoomState(client *Client) {
 		}
 	}
 
-	// Calculate up-to-date position
 	calculatedPos := h.syncer.CalculateCurrentPosition(videoState)
 	stateCopy := *videoState
 	stateCopy.Position = calculatedPos
@@ -175,7 +237,7 @@ func (h *Hub) sendInitialRoomState(client *Client) {
 	activeVideoURL := h.roomVideoURLs[client.RoomID]
 	h.mu.RUnlock()
 
-	client.SendJSON(&model.WSMessage{
+	_ = client.SendJSON(&model.WSMessage{
 		Type:      model.EventRoomState,
 		RoomID:    client.RoomID,
 		Timestamp: time.Now().UnixMilli(),
@@ -189,54 +251,92 @@ func (h *Hub) sendInitialRoomState(client *Client) {
 	})
 }
 
-// BroadcastToRoom sends a message to all clients in a specific room
+// BroadcastToRoom serializes a message once and broadcasts locally + across Redis PubSub
 func (h *Hub) BroadcastToRoom(roomID string, msg *model.WSMessage) {
-	h.mu.RLock()
-	clients := make([]*Client, 0)
-	if roomClients, ok := h.rooms[roomID]; ok {
-		for c := range roomClients {
-			clients = append(clients, c)
-		}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("failed to marshal broadcast message: %v", err)
+		return
 	}
-	h.mu.RUnlock()
 
-	for _, c := range clients {
-		_ = c.SendJSON(msg)
+	// 1. Deliver to local clients in this instance immediately
+	h.BroadcastRawLocally(roomID, "", data)
+
+	// 2. Publish to Redis for other cluster nodes
+	if h.redisStore != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			env := RedisPubSubEnvelope{
+				OriginNode: h.instanceID,
+				RoomID:     roomID,
+				Data:       data,
+			}
+			envBytes, err := json.Marshal(env)
+			if err == nil {
+				_ = h.redisStore.PublishRoomEvent(ctx, roomID, envBytes)
+			}
+		}()
 	}
 }
 
-// BroadcastExcept sends to all room clients except the specified one
-func (h *Hub) BroadcastExcept(roomID string, exceptClientID string, msg *model.WSMessage) {
+// BroadcastExcept sends to all room clients except the specified user
+func (h *Hub) BroadcastExcept(roomID string, exceptUserID string, msg *model.WSMessage) {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
+	h.BroadcastRawLocally(roomID, exceptUserID, data)
+
+	if h.redisStore != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			env := RedisPubSubEnvelope{
+				OriginNode: h.instanceID,
+				RoomID:     roomID,
+				Data:       data,
+			}
+			envBytes, err := json.Marshal(env)
+			if err == nil {
+				_ = h.redisStore.PublishRoomEvent(ctx, roomID, envBytes)
+			}
+		}()
+	}
+}
+
+// BroadcastRawLocally delivers pre-serialized raw bytes directly to connected local clients
+func (h *Hub) BroadcastRawLocally(roomID string, exceptUserID string, data []byte) {
 	h.mu.RLock()
-	clients := make([]*Client, 0)
+	var targets []*Client
 	if roomClients, ok := h.rooms[roomID]; ok {
 		for c := range roomClients {
-			if c.UserID != exceptClientID {
-				clients = append(clients, c)
+			if exceptUserID == "" || c.UserID != exceptUserID {
+				targets = append(targets, c)
 			}
 		}
 	}
 	h.mu.RUnlock()
 
-	for _, c := range clients {
-		_ = c.SendJSON(msg)
+	for _, c := range targets {
+		_ = c.SendRaw(data)
 	}
 }
 
-// HandleIncomingMessage parses and routes incoming client events
-func (h *Hub) HandleIncomingMessage(client *Client, msg *model.WSMessage) {
+// HandleIncomingMessage parses and routes incoming client events with zero double-marshal overhead
+func (h *Hub) HandleIncomingMessage(client *Client, msg *model.WSIncomingMessage) {
 	nowMs := time.Now().UnixMilli()
+	ctx := context.Background()
 
 	switch msg.Type {
 	case model.EventPlay, model.EventPause, model.EventSeek, model.EventRate:
 		var action model.VideoActionPayload
-		raw, _ := json.Marshal(msg.Payload)
-		if err := json.Unmarshal(raw, &action); err != nil {
+		if err := json.Unmarshal(msg.Payload, &action); err != nil {
 			log.Printf("invalid video payload: %v", err)
 			return
 		}
 
-		newState, err := h.syncer.HandleAction(msg.Type, client.RoomID, client.UserID, client.IsHost, action.Position, action.Rate)
+		newState, err := h.syncer.HandleAction(ctx, msg.Type, client.RoomID, client.UserID, client.IsHost, action.Position, action.Rate)
 		if err != nil {
 			_ = client.SendJSON(&model.WSMessage{
 				Type:      model.EventError,
@@ -247,7 +347,6 @@ func (h *Hub) HandleIncomingMessage(client *Client, msg *model.WSMessage) {
 			return
 		}
 
-		// Broadcast state change to all members in the room
 		h.BroadcastToRoom(client.RoomID, &model.WSMessage{
 			Type:      msg.Type,
 			RoomID:    client.RoomID,
@@ -258,12 +357,11 @@ func (h *Hub) HandleIncomingMessage(client *Client, msg *model.WSMessage) {
 
 	case model.EventSyncRequest:
 		var req model.SyncRequestPayload
-		raw, _ := json.Marshal(msg.Payload)
-		if err := json.Unmarshal(raw, &req); err != nil {
+		if err := json.Unmarshal(msg.Payload, &req); err != nil {
 			return
 		}
 
-		correction, err := h.syncer.CheckSync(client.RoomID, req.ClientPosition)
+		correction, err := h.syncer.CheckSync(ctx, client.RoomID, req.ClientPosition)
 		if err != nil {
 			return
 		}
@@ -277,8 +375,7 @@ func (h *Hub) HandleIncomingMessage(client *Client, msg *model.WSMessage) {
 
 	case model.EventChatMessage:
 		var chatPayload model.ChatPayload
-		raw, _ := json.Marshal(msg.Payload)
-		if err := json.Unmarshal(raw, &chatPayload); err != nil {
+		if err := json.Unmarshal(msg.Payload, &chatPayload); err != nil {
 			return
 		}
 
@@ -298,7 +395,11 @@ func (h *Hub) HandleIncomingMessage(client *Client, msg *model.WSMessage) {
 			CreatedAt: time.Now(),
 		}
 
-		_ = h.store.SaveMessage(chatMsg)
+		go func() {
+			saveCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_ = h.store.SaveMessage(saveCtx, chatMsg)
+		}()
 
 		h.BroadcastToRoom(client.RoomID, &model.WSMessage{
 			Type:      model.EventChatMessage,
@@ -310,11 +411,9 @@ func (h *Hub) HandleIncomingMessage(client *Client, msg *model.WSMessage) {
 
 	case model.EventTyping:
 		var typingPayload model.TypingPayload
-		raw, _ := json.Marshal(msg.Payload)
-		_ = json.Unmarshal(raw, &typingPayload)
+		_ = json.Unmarshal(msg.Payload, &typingPayload)
 		typingPayload.UserName = client.UserName
 
-		// Broadcast to everyone else in the room
 		h.BroadcastExcept(client.RoomID, client.UserID, &model.WSMessage{
 			Type:      model.EventTyping,
 			RoomID:    client.RoomID,
@@ -335,10 +434,13 @@ func (h *Hub) HandleIncomingMessage(client *Client, msg *model.WSMessage) {
 		}
 
 		var settings model.UpdateSettingsPayload
-		raw, _ := json.Marshal(msg.Payload)
-		_ = json.Unmarshal(raw, &settings)
+		_ = json.Unmarshal(msg.Payload, &settings)
 
-		_ = h.store.UpdateRoomSettings(client.RoomID, settings.OnlyHostCanControl)
+		go func() {
+			upCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_ = h.store.UpdateRoomSettings(upCtx, client.RoomID, settings.OnlyHostCanControl)
+		}()
 
 		h.BroadcastToRoom(client.RoomID, &model.WSMessage{
 			Type:      model.EventUpdateSettings,
@@ -348,19 +450,20 @@ func (h *Hub) HandleIncomingMessage(client *Client, msg *model.WSMessage) {
 		})
 
 	case model.EventAudioChangeRequest:
-		// Broadcast audio change recommendation to all other room members
+		var audioPayload interface{}
+		_ = json.Unmarshal(msg.Payload, &audioPayload)
+
 		h.BroadcastExcept(client.RoomID, client.UserID, &model.WSMessage{
 			Type:      model.EventAudioChangeRequest,
 			RoomID:    client.RoomID,
 			UserID:    client.UserID,
 			Timestamp: nowMs,
-			Payload:   msg.Payload,
+			Payload:   audioPayload,
 		})
 
 	case model.EventReaction:
 		var reaction model.ReactionPayload
-		raw, _ := json.Marshal(msg.Payload)
-		if err := json.Unmarshal(raw, &reaction); err != nil {
+		if err := json.Unmarshal(msg.Payload, &reaction); err != nil {
 			return
 		}
 		reaction.UserID = client.UserID
@@ -377,7 +480,7 @@ func (h *Hub) HandleIncomingMessage(client *Client, msg *model.WSMessage) {
 	case model.EventVideoURL:
 		canControl := true
 		if client.RoomID != "" {
-			if r, err := h.store.GetRoomByID(client.RoomID); err == nil && r != nil {
+			if r, err := h.store.GetRoomByID(ctx, client.RoomID); err == nil && r != nil {
 				if r.OnlyHostCanControl && !client.IsHost {
 					canControl = false
 				}
@@ -394,8 +497,7 @@ func (h *Hub) HandleIncomingMessage(client *Client, msg *model.WSMessage) {
 		}
 
 		var urlPayload model.VideoURLPayload
-		raw, _ := json.Marshal(msg.Payload)
-		if err := json.Unmarshal(raw, &urlPayload); err == nil {
+		if err := json.Unmarshal(msg.Payload, &urlPayload); err == nil {
 			h.mu.Lock()
 			if urlPayload.URL != "" && urlPayload.SourceType != "file" {
 				h.roomVideoURLs[client.RoomID] = &urlPayload
@@ -410,18 +512,16 @@ func (h *Hub) HandleIncomingMessage(client *Client, msg *model.WSMessage) {
 			RoomID:    client.RoomID,
 			UserID:    client.UserID,
 			Timestamp: nowMs,
-			Payload:   msg.Payload,
+			Payload:   urlPayload,
 		})
 
 	case model.EventVoiceSignal:
 		var signal model.VoiceSignalPayload
-		raw, _ := json.Marshal(msg.Payload)
-		if err := json.Unmarshal(raw, &signal); err != nil {
+		if err := json.Unmarshal(msg.Payload, &signal); err != nil {
 			return
 		}
 		signal.SenderUserID = client.UserID
 
-		// Relay WebRTC signal directly to the intended target client
 		h.mu.RLock()
 		if clients, ok := h.rooms[client.RoomID]; ok {
 			for targetClient := range clients {
@@ -441,12 +541,10 @@ func (h *Hub) HandleIncomingMessage(client *Client, msg *model.WSMessage) {
 
 	case model.EventVoiceState:
 		var state model.VoiceStatePayload
-		raw, _ := json.Marshal(msg.Payload)
-		_ = json.Unmarshal(raw, &state)
+		_ = json.Unmarshal(msg.Payload, &state)
 		state.UserID = client.UserID
 		state.UserName = client.UserName
 
-		// Broadcast voice presence / mute change to everyone in the room
 		h.BroadcastToRoom(client.RoomID, &model.WSMessage{
 			Type:      model.EventVoiceState,
 			RoomID:    client.RoomID,

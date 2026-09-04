@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 	"watchparty-backend/internal/auth"
 	"watchparty-backend/internal/model"
@@ -19,9 +22,29 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+var allowedOrigins = os.Getenv("ALLOWED_ORIGINS")
+
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
-		return true // Allow all origins for dev / desktop app
+		origin := r.Header.Get("Origin")
+		// Allow native / desktop / mobile apps without Origin header
+		if origin == "" {
+			return true
+		}
+		// If explicitly configured to *, or empty in dev, allow localhost
+		if allowedOrigins == "*" || allowedOrigins == "" {
+			if strings.Contains(origin, "localhost") || strings.Contains(origin, "127.0.0.1") {
+				return true
+			}
+			return true
+		}
+		// Check against comma-separated whitelist
+		for _, allowed := range strings.Split(allowedOrigins, ",") {
+			if strings.TrimSpace(allowed) == origin {
+				return true
+			}
+		}
+		return false
 	},
 }
 
@@ -38,7 +61,11 @@ func generateRoomCode() string {
 
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			origin = "*"
+		}
+		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -63,6 +90,7 @@ func main() {
 	jwtSecret := os.Getenv("JWT_SECRET")
 	if jwtSecret == "" {
 		jwtSecret = "dyuet-dev-secret-key-12345"
+		log.Println("⚠️ JWT_SECRET not set: using fallback dev secret. Ensure JWT_SECRET is set in production!")
 	}
 
 	// 1. Initialize Storage Layer
@@ -81,10 +109,25 @@ func main() {
 		dataStore = store.NewMemoryStore()
 	}
 
-	// 2. Initialize Services
+	// 2. Initialize Redis (for distributed Pub/Sub & caching if available)
+	var redisStore *store.RedisStore
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr != "" {
+		rStore, err := store.NewRedisStore(redisAddr, os.Getenv("REDIS_PASSWORD"), 0)
+		if err != nil {
+			log.Printf("⚠️ Redis unavailable at %s (%v); operating in single-node mode", redisAddr, err)
+		} else {
+			redisStore = rStore
+			log.Printf("✅ Connected to Redis at %s for multi-instance horizontal scaling", redisAddr)
+		}
+	}
+
+	// 3. Initialize Services
 	authService := auth.NewAuthService(jwtSecret, dataStore)
+	defer authService.Close()
+
 	videoSyncer := video.NewVideoSyncer(dataStore)
-	hub := ws.NewHub(dataStore, videoSyncer)
+	hub := ws.NewHub(dataStore, redisStore, videoSyncer)
 	go hub.Run()
 
 	mux := http.NewServeMux()
@@ -92,7 +135,12 @@ func main() {
 	// Health check
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "time": time.Now().String()})
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":    "ok",
+			"time":      time.Now().UTC().Format(time.RFC3339),
+			"redis":     redisStore != nil,
+			"multiNode": redisStore != nil,
+		})
 	})
 
 	// Auth: Request OTP
@@ -111,16 +159,23 @@ func main() {
 
 		code, err := authService.RequestOTP(req.Email)
 		if err != nil {
+			if err == auth.ErrRateLimited {
+				http.Error(w, err.Error(), http.StatusTooManyRequests)
+				return
+			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		log.Printf("Generated OTP for %s: %s", req.Email, code)
+		// Security: Log OTP for dev environments, NEVER expose plaintext code in response
+		if os.Getenv("ENV") != "production" {
+			log.Printf("[DEV OTP] One-time password for %s is: %s", req.Email, code)
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
-			"message": "OTP sent successfully (Development code: 123456 or " + code + ")",
-			"code":    code, // Included in response for seamless local testing
+			"message": "OTP verification code sent to email address",
 		})
 	})
 
@@ -141,8 +196,12 @@ func main() {
 			return
 		}
 
-		user, token, err := authService.VerifyOTP(req.Email, req.Code, req.Name, req.Avatar)
+		user, token, err := authService.VerifyOTP(r.Context(), req.Email, req.Code, req.Name, req.Avatar)
 		if err != nil {
+			if err == auth.ErrTooManyTries {
+				http.Error(w, err.Error(), http.StatusTooManyRequests)
+				return
+			}
 			http.Error(w, err.Error(), http.StatusUnauthorized)
 			return
 		}
@@ -154,7 +213,7 @@ func main() {
 		})
 	})
 
-	// Auth: Google Mock / Exchange
+	// Auth: Google Login
 	mux.HandleFunc("/api/auth/google", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -170,7 +229,7 @@ func main() {
 			return
 		}
 
-		user, token, err := authService.GoogleLogin(req.Email, req.Name, req.Avatar)
+		user, token, err := authService.GoogleLogin(r.Context(), req.Email, req.Name, req.Avatar)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -194,7 +253,7 @@ func main() {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 
-		user, token, err := authService.GuestLogin(req.Name)
+		user, token, err := authService.GuestLogin(r.Context(), req.Name)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -217,7 +276,7 @@ func main() {
 			return
 		}
 
-		user, err := dataStore.GetUserByID(claims.UserID)
+		user, err := dataStore.GetUserByID(r.Context(), claims.UserID)
 		if err != nil {
 			http.Error(w, "User not found", http.StatusNotFound)
 			return
@@ -252,17 +311,18 @@ func main() {
 			CreatedAt:          time.Now(),
 		}
 
-		if err := dataStore.CreateRoom(room); err != nil {
+		ctx := r.Context()
+		if err := dataStore.CreateRoom(ctx, room); err != nil {
 			http.Error(w, "Failed to create room", http.StatusInternalServerError)
 			return
 		}
 
 		// Add host as member
-		user, _ := dataStore.GetUserByID(claims.UserID)
+		user, _ := dataStore.GetUserByID(ctx, claims.UserID)
 		if user == nil {
 			user = &model.User{ID: claims.UserID, Name: claims.Name, Avatar: claims.Avatar}
 		}
-		_ = dataStore.AddMember(&model.RoomMember{
+		_ = dataStore.AddMember(ctx, &model.RoomMember{
 			RoomID:   room.ID,
 			UserID:   claims.UserID,
 			User:     *user,
@@ -272,7 +332,7 @@ func main() {
 		})
 
 		// Initialize video state
-		_ = dataStore.SetVideoState(&model.VideoState{
+		_ = dataStore.SetVideoState(ctx, &model.VideoState{
 			RoomID:    room.ID,
 			Playing:   false,
 			Position:  0,
@@ -288,13 +348,14 @@ func main() {
 	mux.HandleFunc("/api/rooms/by-code/", func(w http.ResponseWriter, r *http.Request) {
 		code := strings.TrimPrefix(r.URL.Path, "/api/rooms/by-code/")
 		code = strings.ToUpper(strings.TrimSpace(code))
-		room, err := dataStore.GetRoomByCode(code)
+		ctx := r.Context()
+		room, err := dataStore.GetRoomByCode(ctx, code)
 		if err != nil {
 			http.Error(w, "Room not found", http.StatusNotFound)
 			return
 		}
 
-		members, _ := dataStore.GetRoomMembers(room.ID)
+		members, _ := dataStore.GetRoomMembers(ctx, room.ID)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"room":    room,
@@ -325,19 +386,20 @@ func main() {
 		}
 
 		req.Code = strings.ToUpper(strings.TrimSpace(req.Code))
-		room, err := dataStore.GetRoomByCode(req.Code)
+		ctx := r.Context()
+		room, err := dataStore.GetRoomByCode(ctx, req.Code)
 		if err != nil {
 			http.Error(w, "Room not found", http.StatusNotFound)
 			return
 		}
 
-		user, _ := dataStore.GetUserByID(claims.UserID)
+		user, _ := dataStore.GetUserByID(ctx, claims.UserID)
 		if user == nil {
 			user = &model.User{ID: claims.UserID, Name: claims.Name, Avatar: claims.Avatar}
 		}
 
 		isHost := (room.HostID == claims.UserID)
-		_ = dataStore.AddMember(&model.RoomMember{
+		_ = dataStore.AddMember(ctx, &model.RoomMember{
 			RoomID:   room.ID,
 			UserID:   claims.UserID,
 			User:     *user,
@@ -369,7 +431,7 @@ func main() {
 			return
 		}
 
-		room, err := dataStore.GetRoomByID(roomID)
+		room, err := dataStore.GetRoomByID(r.Context(), roomID)
 		if err != nil {
 			http.Error(w, "Room not found", http.StatusNotFound)
 			return
@@ -398,7 +460,7 @@ func main() {
 		go client.ReadPump()
 	})
 
-	// Serve Frontend Static Files if directory exists (Zero-Docker, Single Process Mode!)
+	// Serve Frontend Static Files if directory exists
 	for _, dir := range []string{"../frontend/dist", "./frontend/dist", "./dist"} {
 		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
 			staticDir := dir
@@ -424,8 +486,38 @@ func main() {
 	log.Printf("🚀 Duet Go backend starting on http://localhost%s\n", serverAddr)
 	log.Printf("⚡ WebSocket endpoint ready at ws://localhost%s/ws\n", serverAddr)
 
-	handler := corsMiddleware(mux)
-	if err := http.ListenAndServe(serverAddr, handler); err != nil {
-		log.Fatalf("Server error: %v", err)
+	// Slowloris-resistant HTTP server with explicit timeouts
+	server := &http.Server{
+		Addr:              serverAddr,
+		Handler:           corsMiddleware(mux),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
+
+	// Setup Graceful Shutdown
+	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server error: %v", err)
+		}
+	}()
+
+	<-shutdownCtx.Done()
+	log.Println("Received shutdown signal. Gracefully draining connections...")
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer drainCancel()
+
+	if err := server.Shutdown(drainCtx); err != nil {
+		log.Printf("Forced shutdown warning: %v", err)
+	}
+
+	if redisStore != nil {
+		_ = redisStore.Close()
+	}
+	log.Println("Duet backend exited cleanly.")
 }

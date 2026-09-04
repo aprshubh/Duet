@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"watchparty-backend/internal/model"
@@ -13,13 +14,13 @@ var (
 // MemoryStore provides a full in-memory, thread-safe implementation of Store
 type MemoryStore struct {
 	mu          sync.RWMutex
-	users       map[string]*model.User          // userID -> User
-	usersByMail map[string]*model.User          // email -> User
-	rooms       map[string]*model.Room          // roomID -> Room
-	roomsByCode map[string]*model.Room          // code -> Room
+	users       map[string]*model.User                  // userID -> User
+	usersByMail map[string]*model.User                  // email -> User
+	rooms       map[string]*model.Room                  // roomID -> Room
+	roomsByCode map[string]*model.Room                  // code -> Room
 	members     map[string]map[string]*model.RoomMember // roomID -> userID -> RoomMember
-	messages    map[string][]*model.Message     // roomID -> []Message
-	videoStates map[string]*model.VideoState    // roomID -> VideoState
+	messages    map[string][]*model.Message             // roomID -> []Message
+	videoStates map[string]*model.VideoState            // roomID -> VideoState
 }
 
 // NewMemoryStore creates a new thread-safe in-memory store
@@ -35,7 +36,10 @@ func NewMemoryStore() *MemoryStore {
 	}
 }
 
-func (s *MemoryStore) CreateUser(user *model.User) error {
+func (s *MemoryStore) CreateUser(ctx context.Context, user *model.User) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.users[user.ID] = user
@@ -45,7 +49,10 @@ func (s *MemoryStore) CreateUser(user *model.User) error {
 	return nil
 }
 
-func (s *MemoryStore) GetUserByID(id string) (*model.User, error) {
+func (s *MemoryStore) GetUserByID(ctx context.Context, id string) (*model.User, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	u, ok := s.users[id]
@@ -55,7 +62,10 @@ func (s *MemoryStore) GetUserByID(id string) (*model.User, error) {
 	return u, nil
 }
 
-func (s *MemoryStore) GetUserByEmail(email string) (*model.User, error) {
+func (s *MemoryStore) GetUserByEmail(ctx context.Context, email string) (*model.User, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	u, ok := s.usersByMail[email]
@@ -65,7 +75,10 @@ func (s *MemoryStore) GetUserByEmail(email string) (*model.User, error) {
 	return u, nil
 }
 
-func (s *MemoryStore) CreateRoom(room *model.Room) error {
+func (s *MemoryStore) CreateRoom(ctx context.Context, room *model.Room) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rooms[room.ID] = room
@@ -76,7 +89,10 @@ func (s *MemoryStore) CreateRoom(room *model.Room) error {
 	return nil
 }
 
-func (s *MemoryStore) GetRoomByCode(code string) (*model.Room, error) {
+func (s *MemoryStore) GetRoomByCode(ctx context.Context, code string) (*model.Room, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	r, ok := s.roomsByCode[code]
@@ -86,7 +102,10 @@ func (s *MemoryStore) GetRoomByCode(code string) (*model.Room, error) {
 	return r, nil
 }
 
-func (s *MemoryStore) GetRoomByID(id string) (*model.Room, error) {
+func (s *MemoryStore) GetRoomByID(ctx context.Context, id string) (*model.Room, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	r, ok := s.rooms[id]
@@ -96,7 +115,10 @@ func (s *MemoryStore) GetRoomByID(id string) (*model.Room, error) {
 	return r, nil
 }
 
-func (s *MemoryStore) UpdateRoomSettings(roomID string, onlyHostCanControl bool) error {
+func (s *MemoryStore) UpdateRoomSettings(ctx context.Context, roomID string, onlyHostCanControl bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, ok := s.rooms[roomID]
@@ -107,7 +129,10 @@ func (s *MemoryStore) UpdateRoomSettings(roomID string, onlyHostCanControl bool)
 	return nil
 }
 
-func (s *MemoryStore) AddMember(member *model.RoomMember) error {
+func (s *MemoryStore) AddMember(ctx context.Context, member *model.RoomMember) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.members[member.RoomID] == nil {
@@ -117,7 +142,10 @@ func (s *MemoryStore) AddMember(member *model.RoomMember) error {
 	return nil
 }
 
-func (s *MemoryStore) RemoveMember(roomID, userID string) error {
+func (s *MemoryStore) RemoveMember(ctx context.Context, roomID, userID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if roomMembers, ok := s.members[roomID]; ok {
@@ -126,7 +154,10 @@ func (s *MemoryStore) RemoveMember(roomID, userID string) error {
 	return nil
 }
 
-func (s *MemoryStore) GetRoomMembers(roomID string) ([]model.RoomMember, error) {
+func (s *MemoryStore) GetRoomMembers(ctx context.Context, roomID string) ([]model.RoomMember, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var list []model.RoomMember
@@ -138,7 +169,10 @@ func (s *MemoryStore) GetRoomMembers(roomID string) ([]model.RoomMember, error) 
 	return list, nil
 }
 
-func (s *MemoryStore) UpdateMemberOnline(roomID, userID string, isOnline bool) error {
+func (s *MemoryStore) UpdateMemberOnline(ctx context.Context, roomID, userID string, isOnline bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if roomMembers, ok := s.members[roomID]; ok {
@@ -150,14 +184,20 @@ func (s *MemoryStore) UpdateMemberOnline(roomID, userID string, isOnline bool) e
 	return ErrNotFound
 }
 
-func (s *MemoryStore) SaveMessage(msg *model.Message) error {
+func (s *MemoryStore) SaveMessage(ctx context.Context, msg *model.Message) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.messages[msg.RoomID] = append(s.messages[msg.RoomID], msg)
 	return nil
 }
 
-func (s *MemoryStore) GetRecentMessages(roomID string, limit int) ([]model.Message, error) {
+func (s *MemoryStore) GetRecentMessages(ctx context.Context, roomID string, limit int) ([]model.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	all := s.messages[roomID]
@@ -175,7 +215,10 @@ func (s *MemoryStore) GetRecentMessages(roomID string, limit int) ([]model.Messa
 	return res, nil
 }
 
-func (s *MemoryStore) GetVideoState(roomID string) (*model.VideoState, error) {
+func (s *MemoryStore) GetVideoState(ctx context.Context, roomID string) (*model.VideoState, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	state, ok := s.videoStates[roomID]
@@ -185,7 +228,10 @@ func (s *MemoryStore) GetVideoState(roomID string) (*model.VideoState, error) {
 	return state, nil
 }
 
-func (s *MemoryStore) SetVideoState(state *model.VideoState) error {
+func (s *MemoryStore) SetVideoState(ctx context.Context, state *model.VideoState) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.videoStates[state.RoomID] = state

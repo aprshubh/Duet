@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // User represents an authenticated or guest user
 type User struct {
@@ -112,6 +115,20 @@ type WSMessage struct {
 	UserID    string      `json:"userId,omitempty"`
 	Payload   interface{} `json:"payload,omitempty"`
 	Timestamp int64       `json:"timestamp"`
+}
+
+// ToBytes serializes the WSMessage to JSON bytes
+func (m *WSMessage) ToBytes() ([]byte, error) {
+	return json.Marshal(m)
+}
+
+// WSIncomingMessage represents an incoming message from a WebSocket client with raw payload
+type WSIncomingMessage struct {
+	Type      string          `json:"type"`
+	RoomID    string          `json:"roomId,omitempty"`
+	UserID    string          `json:"userId,omitempty"`
+	Payload   json.RawMessage `json:"payload,omitempty"`
+	Timestamp int64           `json:"timestamp"`
 }
 
 // VideoActionPayload represents client actions for PLAY, PAUSE, SEEK, RATE

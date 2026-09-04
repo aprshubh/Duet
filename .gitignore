@@ -4,7 +4,9 @@
 *.dll
 *.so
 *.dylib
+backend/server
 backend/server.exe
+backend/*.exe
 
 # Dependencies
 node_modules/

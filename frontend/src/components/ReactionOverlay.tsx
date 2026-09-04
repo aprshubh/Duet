@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { ReactionPayload } from '../types';
 import { WebSocketClient } from '../services/websocket';
 import { Smile } from 'lucide-react';
@@ -23,18 +23,28 @@ export const ReactionOverlay: React.FC<ReactionOverlayProps> = ({
 }) => {
   const [reactions, setReactions] = useState<ReactionItem[]>([]);
   const [isPickerOpen, setIsPickerOpen] = useState(false);
+  const timeoutsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
   // Trigger floating emoji animation
   const spawnReaction = useCallback((emoji: string, userName: string) => {
-    const id = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     const leftPercent = 65 + Math.random() * 25; // Random position on right side (65% - 90%)
 
     setReactions((prev) => [...prev.slice(-25), { id, emoji, userName, leftPercent }]);
 
-    // Auto remove after animation completes (3.2 seconds)
-    setTimeout(() => {
+    const t = setTimeout(() => {
       setReactions((prev) => prev.filter((r) => r.id !== id));
+      timeoutsRef.current.delete(t);
     }, 3200);
+    timeoutsRef.current.add(t);
+  }, []);
+
+  useEffect(() => {
+    const activeTimeouts = timeoutsRef.current;
+    return () => {
+      activeTimeouts.forEach((t) => clearTimeout(t));
+      activeTimeouts.clear();
+    };
   }, []);
 
   // Listen for incoming reactions from other room members
@@ -54,9 +64,7 @@ export const ReactionOverlay: React.FC<ReactionOverlayProps> = ({
   }, [wsClient, spawnReaction]);
 
   const handleSendReaction = (emoji: string) => {
-    // Immediate local spawn
     spawnReaction(emoji, currentUserName);
-    // Broadcast to room
     wsClient?.sendReaction(emoji, currentUserName);
   };
 
@@ -78,7 +86,7 @@ export const ReactionOverlay: React.FC<ReactionOverlayProps> = ({
 
       {/* Floating Reaction Bar & Quick Trigger */}
       <div className="reaction-dock">
-        <div className={`reaction-picker ${isPickerOpen ? 'open' : ''}`}>
+        <div className={`reaction-picker ${isPickerOpen ? 'open' : ''}`} role="group" aria-label="Emoji Reactions">
           {EMOJI_OPTIONS.map((emoji) => (
             <button
               key={emoji}
@@ -86,6 +94,7 @@ export const ReactionOverlay: React.FC<ReactionOverlayProps> = ({
               className="reaction-btn"
               onClick={() => handleSendReaction(emoji)}
               title={`React ${emoji}`}
+              aria-label={`React ${emoji}`}
             >
               {emoji}
             </button>
@@ -97,6 +106,8 @@ export const ReactionOverlay: React.FC<ReactionOverlayProps> = ({
           className={`reaction-toggle-btn ${isPickerOpen ? 'active' : ''}`}
           onClick={() => setIsPickerOpen((prev) => !prev)}
           title="Send Reaction"
+          aria-label="Toggle emoji reaction picker"
+          aria-expanded={isPickerOpen}
         >
           <Smile size={18} />
         </button>

@@ -17,12 +17,6 @@ interface YouTubePlayerProps {
   onClose?: () => void;
 }
 
-export function extractYouTubeId(url: string): string | null {
-  if (!url) return null;
-  const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
-  return match ? match[1] : null;
-}
-
 export const YouTubePlayer: React.FC<YouTubePlayerProps> = ({
   videoId,
   room,
@@ -32,6 +26,11 @@ export const YouTubePlayer: React.FC<YouTubePlayerProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<any>(null);
   const suppressBroadcastUntilRef = useRef<number>(0);
+  const wsClientRef = useRef<WebSocketClient | null>(wsClient);
+  useEffect(() => {
+    wsClientRef.current = wsClient;
+  }, [wsClient]);
+
   const [isReady, setIsReady] = useState(false);
 
   const canControl = !room.onlyHostCanControl || isHost;
@@ -43,7 +42,6 @@ export const YouTubePlayer: React.FC<YouTubePlayerProps> = ({
     const initPlayer = () => {
       if (!containerRef.current || !window.YT || !window.YT.Player) return;
 
-      // Clear previous iframe if any
       containerRef.current.innerHTML = '<div id="yt-player-target"></div>';
 
       playerRef.current = new window.YT.Player('yt-player-target', {
@@ -75,10 +73,10 @@ export const YouTubePlayer: React.FC<YouTubePlayerProps> = ({
             // YT.PlayerState: PLAYING (1), PAUSED (2)
             if (event.data === 1) {
               const currentTime = player.getCurrentTime() || 0;
-              wsClient?.sendPlay(currentTime, player.getPlaybackRate() || 1.0);
+              wsClientRef.current?.sendPlay(currentTime, player.getPlaybackRate() || 1.0);
             } else if (event.data === 2) {
               const currentTime = player.getCurrentTime() || 0;
-              wsClient?.sendPause(currentTime, player.getPlaybackRate() || 1.0);
+              wsClientRef.current?.sendPause(currentTime, player.getPlaybackRate() || 1.0);
             }
           },
         },
@@ -88,7 +86,6 @@ export const YouTubePlayer: React.FC<YouTubePlayerProps> = ({
     if (window.YT && window.YT.Player) {
       initPlayer();
     } else {
-      // Load YouTube IFrame API script tag
       const existingScript = document.getElementById('youtube-iframe-api');
       if (!existingScript) {
         const tag = document.createElement('script');
@@ -169,7 +166,6 @@ export const YouTubePlayer: React.FC<YouTubePlayerProps> = ({
       }),
     ];
 
-    // Periodic sync check every 4 seconds
     const interval = setInterval(() => {
       const player = playerRef.current;
       if (player && isReady) {

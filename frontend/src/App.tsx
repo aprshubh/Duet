@@ -1,8 +1,10 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import type { User, Room, RoomMember, VideoState, Message, AudioChangePayload, VideoURLPayload } from './types';
 import { api, getStoredUser, getAuthToken } from './services/api';
 import { WebSocketClient } from './services/websocket';
 import { ThemeProvider } from './context/ThemeContext';
+import { ToastProvider } from './context/ToastContext';
+import { useToast } from './context/useToast';
 import { DyuetLogo } from './components/DyuetLogo';
 import { RoomControls } from './room/RoomControls';
 import { VideoPlayer } from './video/VideoPlayer';
@@ -11,6 +13,7 @@ import { WebRTCVoiceManager, type VoicePeer } from './services/webrtc';
 import { PlusCircle, LogIn, User as UserIcon } from 'lucide-react';
 
 function DyuetApp() {
+  const toast = useToast();
   const [currentUser, setCurrentUser] = useState<User | null>(() => getStoredUser());
   const [nameInput, setNameInput] = useState<string>(() => {
     const saved = getStoredUser();
@@ -50,19 +53,50 @@ function DyuetApp() {
   const [wsClient, setWsClient] = useState<WebSocketClient | null>(null);
   const wsClientRef = useRef<WebSocketClient | null>(null);
 
+  // Clear notification timeout on unmount
   useEffect(() => {
-    if (!currentUser || !room) {
-      if (wsClientRef.current) {
-        wsClientRef.current.disconnect();
-        wsClientRef.current = null;
+    return () => {
+      if (notificationTimeoutRef.current) {
+        clearTimeout(notificationTimeoutRef.current);
       }
-      setWsClient(null);
+    };
+  }, []);
+
+  const handleNewMessage = useCallback((msg: Message) => {
+    if (msg.isSystem) return;
+
+    setAllMessages((prev) => [...prev, msg]);
+
+    if (msg.userId === currentUser?.id) return;
+
+    if (!isChatOpen) {
+      setUnreadCount((c) => c + 1);
+    }
+
+    setActiveNotification(msg);
+    if (notificationTimeoutRef.current) {
+      clearTimeout(notificationTimeoutRef.current);
+    }
+    notificationTimeoutRef.current = setTimeout(() => {
+      setActiveNotification(null);
+    }, 4500);
+  }, [currentUser?.id, isChatOpen]);
+
+  const roomId = room?.id;
+
+  useEffect(() => {
+    if (!currentUser || !roomId) {
       return;
     }
 
     const token = getAuthToken() || '';
-    const client = new WebSocketClient(token, room.id, (status) => {
+    const client = new WebSocketClient(token, roomId, (status) => {
       setWsStatus(status);
+      if (status === 'CONNECTED') {
+        setWsClient(client);
+      } else if (status === 'DISCONNECTED') {
+        setWsClient(null);
+      }
     });
 
     client.on('ROOM_STATE', (msg) => {
@@ -80,6 +114,11 @@ function DyuetApp() {
       if (payload.videoURL) setInitialVideoURL(payload.videoURL);
     });
 
+    client.on('CHAT_MESSAGE', (msg) => {
+      const chatMsg = msg.payload as Message;
+      handleNewMessage(chatMsg);
+    });
+
     client.on('USER_JOIN', (msg) => {
       const p = msg.payload as { userId: string; userName: string; avatar: string; isHost: boolean; isOnline: boolean };
       setMembers((prev) => {
@@ -90,7 +129,7 @@ function DyuetApp() {
         return [
           ...prev,
           {
-            roomId: room.id,
+            roomId,
             userId: p.userId,
             user: { id: p.userId, name: p.userName, avatar: p.avatar, email: '' },
             isHost: p.isHost,
@@ -99,6 +138,7 @@ function DyuetApp() {
           },
         ];
       });
+      toast.info(`${p.userName} joined the room`);
     });
 
     client.on('USER_LEAVE', (msg) => {
@@ -110,15 +150,14 @@ function DyuetApp() {
     client.on('UPDATE_SETTINGS', (msg) => {
       const p = msg.payload as { onlyHostCanControl: boolean };
       setRoom((prev) => (prev ? { ...prev, onlyHostCanControl: p.onlyHostCanControl } : null));
+      toast.info(p.onlyHostCanControl ? 'Host-only controls enabled' : 'Controls open to everyone');
     });
 
-    // Audio change recommendation request from another user
     client.on('AUDIO_CHANGE_REQUEST', (msg) => {
       const p = msg.payload as AudioChangePayload;
       setIncomingAudioRequest(p);
     });
 
-    // WebRTC Voice Chat Integration
     const vm = new WebRTCVoiceManager(currentUser.id, client);
     vm.setCallbacks(
       (peers) => setVoicePeers(peers),
@@ -139,16 +178,14 @@ function DyuetApp() {
 
     client.connect();
     wsClientRef.current = client;
-    setWsClient(client);
 
     return () => {
       vm.leaveVoice();
       voiceManagerRef.current = null;
       client.disconnect();
       wsClientRef.current = null;
-      setWsClient(null);
     };
-  }, [currentUser, room?.id]);
+  }, [currentUser, roomId, handleNewMessage, toast]);
 
   // Ensure ephemeral user session exists with chosen name
   const ensureSession = async (): Promise<User> => {
@@ -161,7 +198,6 @@ function DyuetApp() {
       return currentUser;
     }
 
-    // Instantly generate unique ephemeral ID on server
     const session = await api.createSession(finalName);
     setCurrentUser(session.user);
     return session.user;
@@ -185,8 +221,11 @@ function DyuetApp() {
           joinedAt: new Date().toISOString(),
         },
       ]);
+      toast.success('Room created! Share the room code or link.');
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to create room');
+      const msg = err instanceof Error ? err.message : 'Failed to create room';
+      setError(msg);
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -202,8 +241,11 @@ function DyuetApp() {
       const res = await api.joinRoom(joinCodeInput.trim());
       setRoom(res.room);
       setIsHost(res.isHost);
+      toast.success(`Joined room ${res.room.code}!`);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Room not found or could not join');
+      const msg = err instanceof Error ? err.message : 'Room not found or could not join';
+      setError(msg);
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -226,6 +268,7 @@ function DyuetApp() {
     setInVoice(false);
     setIsSelfMuted(false);
     setVoicePeers([]);
+    toast.info('Left watch room');
   };
 
   // Voice Chat Handlers
@@ -233,12 +276,15 @@ function DyuetApp() {
     if (!voiceManagerRef.current) return;
     const success = await voiceManagerRef.current.joinVoice();
     if (!success) {
-      alert('Microphone access was denied. Please allow microphone permission in your browser to use Voice Chat.');
+      toast.error('Microphone access was denied. Please allow microphone permission in your browser to use Voice Chat.');
+    } else {
+      toast.success('Connected to Voice Chat!');
     }
   };
 
   const handleLeaveVoice = () => {
     voiceManagerRef.current?.leaveVoice();
+    toast.info('Left voice chat');
   };
 
   const handleToggleSelfMute = () => {
@@ -256,28 +302,6 @@ function DyuetApp() {
   const handleUpdateSettings = (onlyHostCanControl: boolean) => {
     wsClientRef.current?.sendUpdateSettings(onlyHostCanControl);
     setRoom((prev) => (prev ? { ...prev, onlyHostCanControl } : null));
-  };
-
-  // Handle incoming message to show floating notification bubble
-  const handleNewMessage = (msg: Message) => {
-    if (msg.isSystem) return;
-
-    setAllMessages((prev) => [...prev, msg]);
-
-    if (msg.userId === currentUser?.id) return;
-
-    if (!isChatOpen) {
-      setUnreadCount((c) => c + 1);
-    }
-
-    // Trigger floating chat bubble overlay
-    setActiveNotification(msg);
-    if (notificationTimeoutRef.current) {
-      clearTimeout(notificationTimeoutRef.current);
-    }
-    notificationTimeoutRef.current = setTimeout(() => {
-      setActiveNotification(null);
-    }, 4500);
   };
 
   const handleToggleChat = () => {
@@ -305,16 +329,15 @@ function DyuetApp() {
   if (!room) {
     return (
       <div className="lobby-screen">
-        {/* Lobby Box */}
         <div className="lobby-card">
           <div className="lobby-icon-badge">
             <DyuetLogo size={58} />
           </div>
 
-          <h2 className="lobby-heading">Duet</h2>
+          <h1 className="lobby-heading">Duet</h1>
           <p className="lobby-subheading">Watch Movies &amp; Videos Together in Sync</p>
 
-          {error && <div className="auth-error" style={{ textAlign: 'center' }}>{error}</div>}
+          {error && <div className="auth-error" role="alert">{error}</div>}
 
           {/* Quick Name Input */}
           <div style={{ marginBottom: 20, textAlign: 'left' }}>
@@ -322,7 +345,7 @@ function DyuetApp() {
               Your Name
             </label>
             <div className="input-with-icon">
-              <UserIcon className="input-icon" size={15} />
+              <UserIcon className="input-icon" size={15} aria-hidden="true" />
               <input
                 type="text"
                 value={nameInput}
@@ -330,6 +353,7 @@ function DyuetApp() {
                 placeholder="Enter your name (e.g. Shubh)"
                 className="form-input has-icon"
                 autoFocus
+                aria-label="Your Name"
               />
             </div>
           </div>
@@ -360,6 +384,7 @@ function DyuetApp() {
               onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
               placeholder="ENTER ROOM CODE"
               className="form-input room-input"
+              aria-label="Room Code"
             />
 
             <button
@@ -400,7 +425,7 @@ function DyuetApp() {
         onSetPeerVolume={handleSetPeerVolume}
       />
 
-      <div className="theater-layout">
+      <main className="theater-layout">
         <VideoPlayer
           room={room}
           isHost={isHost}
@@ -421,12 +446,11 @@ function DyuetApp() {
         <ChatPanel
           currentUser={currentUser || { id: '', name: nameInput || 'User', email: '', avatar: '' }}
           wsClient={wsClient}
-          initialMessages={allMessages}
+          messages={allMessages}
           isOpen={isChatOpen}
           onClose={() => setIsChatOpen(false)}
-          onNewMessage={handleNewMessage}
         />
-      </div>
+      </main>
     </div>
   );
 }
@@ -434,7 +458,9 @@ function DyuetApp() {
 export function App() {
   return (
     <ThemeProvider>
-      <DyuetApp />
+      <ToastProvider>
+        <DyuetApp />
+      </ToastProvider>
     </ThemeProvider>
   );
 }

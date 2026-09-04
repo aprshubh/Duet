@@ -1,6 +1,7 @@
 package video
 
 import (
+	"context"
 	"math"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 )
 
 func TestVideoSyncerDrift(t *testing.T) {
+	ctx := context.Background()
 	memStore := store.NewMemoryStore()
 	syncer := NewVideoSyncer(memStore)
 
@@ -19,12 +21,12 @@ func TestVideoSyncerDrift(t *testing.T) {
 		OnlyHostCanControl: false,
 		CreatedAt:          time.Now(),
 	}
-	if err := memStore.CreateRoom(room); err != nil {
+	if err := memStore.CreateRoom(ctx, room); err != nil {
 		t.Fatalf("failed to create room: %v", err)
 	}
 
 	// Host plays video at position 10.0s
-	state, err := syncer.HandleAction(model.EventPlay, "room1", "user1", true, 10.0, 1.0)
+	state, err := syncer.HandleAction(ctx, model.EventPlay, "room1", "user1", true, 10.0, 1.0)
 	if err != nil {
 		t.Fatalf("failed to handle play: %v", err)
 	}
@@ -33,7 +35,7 @@ func TestVideoSyncerDrift(t *testing.T) {
 	}
 
 	// Check drift for a client that is at 9.8s (200ms drift)
-	correction, err := syncer.CheckSync("room1", 9.8)
+	correction, err := syncer.CheckSync(ctx, "room1", 9.8)
 	if err != nil {
 		t.Fatalf("failed to check sync: %v", err)
 	}
@@ -47,6 +49,7 @@ func TestVideoSyncerDrift(t *testing.T) {
 }
 
 func TestHostOnlyPermissions(t *testing.T) {
+	ctx := context.Background()
 	memStore := store.NewMemoryStore()
 	syncer := NewVideoSyncer(memStore)
 
@@ -57,16 +60,16 @@ func TestHostOnlyPermissions(t *testing.T) {
 		OnlyHostCanControl: true, // Only host can control
 		CreatedAt:          time.Now(),
 	}
-	_ = memStore.CreateRoom(room)
+	_ = memStore.CreateRoom(ctx, room)
 
 	// Non-host user tries to play -> should return ErrUnauthorized
-	_, err := syncer.HandleAction(model.EventPlay, "room2", "viewer1", false, 0.0, 1.0)
+	_, err := syncer.HandleAction(ctx, model.EventPlay, "room2", "viewer1", false, 0.0, 1.0)
 	if err != ErrUnauthorized {
 		t.Fatalf("expected ErrUnauthorized, got %v", err)
 	}
 
 	// Host user plays -> should succeed
-	state, err := syncer.HandleAction(model.EventPlay, "room2", "host1", true, 0.0, 1.0)
+	state, err := syncer.HandleAction(ctx, model.EventPlay, "room2", "host1", true, 0.0, 1.0)
 	if err != nil {
 		t.Fatalf("host should be authorized: %v", err)
 	}

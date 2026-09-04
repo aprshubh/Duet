@@ -36,6 +36,7 @@ export class WebRTCVoiceManager {
   }> = new Map();
 
   private audioCtx: AudioContext | null = null;
+  private pendingCandidates: Map<string, RTCIceCandidateInit[]> = new Map();
   public inVoice: boolean = false;
   public isSelfMuted: boolean = false;
 
@@ -67,6 +68,9 @@ export class WebRTCVoiceManager {
       });
 
       this.audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      if (this.audioCtx.state === 'suspended') {
+        await this.audioCtx.resume().catch(() => {});
+      }
       this.inVoice = true;
       this.isSelfMuted = false;
 
@@ -89,6 +93,7 @@ export class WebRTCVoiceManager {
       peer.audioElement?.remove();
     });
     this.peers.clear();
+    this.pendingCandidates.clear();
 
     this.audioCtx?.close();
     this.audioCtx = null;
@@ -220,6 +225,19 @@ export class WebRTCVoiceManager {
     return pc;
   }
 
+  private async flushCandidates(senderUserId: string, pc: RTCPeerConnection) {
+    const queued = this.pendingCandidates.get(senderUserId);
+    if (!queued || queued.length === 0) return;
+    for (const cand of queued) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(cand));
+      } catch (e) {
+        console.warn('Failed to add queued ICE candidate:', e);
+      }
+    }
+    this.pendingCandidates.delete(senderUserId);
+  }
+
   public async handleSignal(signal: VoiceSignalPayload) {
     if (!this.inVoice) return;
     const { senderUserId, signalType, data } = signal;
@@ -233,6 +251,7 @@ export class WebRTCVoiceManager {
       }
       if (peer) {
         await peer.pc.setRemoteDescription(new RTCSessionDescription(data as RTCSessionDescriptionInit));
+        await this.flushCandidates(senderUserId, peer.pc);
         const answer = await peer.pc.createAnswer();
         await peer.pc.setLocalDescription(answer);
         this.wsClient?.sendVoiceSignal(senderUserId, 'answer', answer);
@@ -240,14 +259,20 @@ export class WebRTCVoiceManager {
     } else if (signalType === 'answer') {
       if (peer) {
         await peer.pc.setRemoteDescription(new RTCSessionDescription(data as RTCSessionDescriptionInit));
+        await this.flushCandidates(senderUserId, peer.pc);
       }
     } else if (signalType === 'candidate') {
-      if (peer && data) {
+      if (peer && peer.pc.remoteDescription) {
         try {
           await peer.pc.addIceCandidate(new RTCIceCandidate(data as RTCIceCandidateInit));
         } catch (e) {
           console.warn('Failed to add ICE candidate:', e);
         }
+      } else if (data) {
+        // Buffer candidate until remote description is set
+        const queue = this.pendingCandidates.get(senderUserId) || [];
+        queue.push(data as RTCIceCandidateInit);
+        this.pendingCandidates.set(senderUserId, queue);
       }
     }
   }

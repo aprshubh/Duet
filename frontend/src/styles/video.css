@@ -770,24 +770,62 @@
 /* ========================================================== */
 
 @media (max-width: 768px) {
-  .video-controls-bar {
-    padding: 6px 8px;
+  .video-player-container {
+    flex: 0 0 auto !important;
+    width: 100% !important;
+    height: auto !important;
+    aspect-ratio: 16 / 9 !important;
+    max-height: 42vh !important;
+    background: #000000;
+  }
+
+  .video-element {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+
+  .theater-layout:has(.chat-drawer.collapsed) .video-player-container {
+    flex: 1 1 auto !important;
+    max-height: 100% !important;
+    aspect-ratio: auto !important;
+  }
+
+  .cinema-controls {
+    padding: 20px 8px 8px 8px;
+  }
+
+  .controls-row {
+    gap: 4px;
+  }
+
+  .controls-group {
     gap: 4px;
   }
 
   .ctrl-btn {
-    padding: 6px;
+    padding: 5px;
     min-width: 32px;
     min-height: 32px;
   }
 
-  .volume-slider-wrap {
+  .volume-wrapper {
     display: none;
   }
 
-  .time-display {
+  .timestamp-display {
     font-size: 10px;
-    padding: 0 4px;
+    margin-left: 2px;
+  }
+
+  .speed-select {
+    padding: 3px 4px;
+    font-size: 10px;
+  }
+
+  .reaction-dock {
+    bottom: 80px;
+    right: 10px;
   }
 
   .fullscreen-chat-panel {

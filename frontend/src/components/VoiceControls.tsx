@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import type { VoicePeer } from '../services/webrtc';
 import { UserAvatar } from './UserAvatar';
 import {
@@ -36,11 +36,34 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
   onSetPeerVolume,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // Close panel on outside click or Escape key
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleClickOutside = (e: MouseEvent) => {
+      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsOpen(false);
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen]);
 
   const totalConnected = (inVoice ? 1 : 0) + voicePeers.length;
 
   return (
-    <div style={{ position: 'relative' }}>
+    <div style={{ position: 'relative' }} ref={panelRef}>
       {/* Header Voice Action Pill */}
       <div className="voice-header-pill">
         {!inVoice ? (
@@ -49,9 +72,10 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
             onClick={onJoinVoice}
             className="header-btn btn-voice-join"
             title="Join Voice Chat"
+            aria-label="Join Voice Chat"
           >
             <Mic size={15} />
-            <span>Voice</span>
+            <span className="header-btn-text">Voice</span>
           </button>
         ) : (
           <div className="voice-active-group">
@@ -60,16 +84,18 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
               onClick={onToggleSelfMute}
               className={`voice-mic-btn ${isSelfMuted ? 'muted' : 'unmuted'}`}
               title={isSelfMuted ? 'Unmute My Microphone' : 'Mute My Microphone'}
+              aria-label={isSelfMuted ? 'Unmute Microphone' : 'Mute Microphone'}
             >
               {isSelfMuted ? <MicOff size={14} /> : <Mic size={14} />}
-              <span>{isSelfMuted ? 'Muted' : 'Mic On'}</span>
+              <span className="voice-mic-status-text">{isSelfMuted ? 'Muted' : 'Mic On'}</span>
             </button>
 
             <button
               type="button"
               onClick={() => setIsOpen(!isOpen)}
               className="voice-panel-toggle"
-              title="Voice Room & Individual Member Audio Controls"
+              title="Voice Room & Member Volumes"
+              aria-label={`Voice participants (${totalConnected})`}
             >
               <span className="voice-count-dot" />
               <span>{totalConnected}</span>
@@ -81,6 +107,7 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
               onClick={onLeaveVoice}
               className="voice-leave-btn"
               title="Leave Voice Chat"
+              aria-label="Leave Voice Chat"
             >
               <PhoneOff size={13} />
             </button>
@@ -90,7 +117,7 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
 
       {/* Voice Controls Dropdown / Drawer */}
       {isOpen && inVoice && (
-        <div className="voice-dropdown-panel">
+        <div className="voice-dropdown-panel" role="dialog" aria-label="Voice Chat Controls">
           <div className="voice-panel-header">
             <div className="voice-panel-title">
               <PhoneCall size={14} className="text-emerald-400" />
@@ -100,6 +127,7 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
               type="button"
               onClick={() => setIsOpen(false)}
               className="voice-panel-close"
+              aria-label="Close voice panel"
             >
               ✕
             </button>
@@ -126,12 +154,13 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
                 onClick={onToggleSelfMute}
                 className={`voice-self-mute-btn ${isSelfMuted ? 'muted' : ''}`}
                 title={isSelfMuted ? 'Unmute microphone' : 'Mute microphone'}
+                aria-label={isSelfMuted ? 'Unmute microphone' : 'Mute microphone'}
               >
                 {isSelfMuted ? <MicOff size={14} /> : <Mic size={14} />}
               </button>
             </div>
 
-            {/* Other Connected Members (With Individual Mute & Volume!) */}
+            {/* Other Connected Members */}
             {voicePeers.length === 0 ? (
               <div className="voice-empty-peers">
                 <span>Waiting for other friends to connect to voice...</span>
@@ -162,7 +191,7 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
                   <div className="voice-peer-actions">
                     {/* Per-User Volume Slider */}
                     <div className="voice-volume-control" title={`Adjust ${peer.userName}'s volume`}>
-                      <Sliders size={12} className="text-muted" />
+                      <Sliders size={12} className="text-muted" aria-hidden="true" />
                       <input
                         type="range"
                         min="0"
@@ -177,6 +206,7 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
                           }
                         }}
                         className="voice-peer-slider"
+                        aria-label={`${peer.userName} volume`}
                       />
                     </div>
 
@@ -189,6 +219,11 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
                         peer.isLocallyMuted
                           ? `Unblock ${peer.userName}'s voice`
                           : `Block/Mute ${peer.userName}'s voice for me`
+                      }
+                      aria-label={
+                        peer.isLocallyMuted
+                          ? `Unblock ${peer.userName}`
+                          : `Mute ${peer.userName} for me`
                       }
                     >
                       {peer.isLocallyMuted ? (

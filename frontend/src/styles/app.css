@@ -240,7 +240,10 @@
 }
 
 .leave-room-btn {
-  padding: 6px 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
   font-size: 12px;
   font-weight: 600;
   border-radius: var(--radius-md);
@@ -807,6 +810,20 @@
   box-sizing: border-box;
 }
 
+.mobile-hamburger-btn {
+  display: none;
+}
+
+.desktop-only-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.desktop-only-control {
+  display: flex;
+}
+
 /* ========================================================== */
 /* COMPREHENSIVE RESPONSIVE MOBILE MEDIA QUERIES              */
 /* ========================================================== */
@@ -818,12 +835,21 @@
     min-height: 52px;
   }
 
-  .header-left, .header-center, .header-right {
+  .header-left, .header-right {
     gap: 6px;
   }
 
+  .desktop-only-controls,
+  .desktop-only-control {
+    display: none !important;
+  }
+
+  .mobile-hamburger-btn {
+    display: inline-flex !important;
+  }
+
   .brand-title {
-    font-size: 14px;
+    font-size: 15px;
   }
 
   .room-code-badge {
@@ -837,26 +863,12 @@
     font-size: 10px;
   }
 
-  /* Control toggle compact on tablet/mobile */
-  .control-label {
-    display: none;
-  }
-
-  .control-pill {
-    padding: 3px 8px;
-    font-size: 10px;
-  }
-
-  /* Chat Drawer slides in as mobile full sheet overlay */
-  .chat-drawer {
-    position: absolute !important;
-    top: 0 !important;
-    right: 0 !important;
-    bottom: 0 !important;
-    width: 100% !important;
-    max-width: 100% !important;
-    z-index: 60 !important;
-    box-shadow: -8px 0 32px rgba(0, 0, 0, 0.8) !important;
+  /* Vertical theater layout on mobile (video on top, chat on bottom) */
+  .theater-layout {
+    display: flex !important;
+    flex-direction: column !important;
+    height: calc(100dvh - 52px) !important;
+    overflow: hidden !important;
   }
 
   /* Lobby Card mobile optimization */
@@ -901,11 +913,325 @@
     display: none;
   }
 
-  .user-badge-name {
+  .header-btn-text {
     display: none;
   }
 
+  .voice-mic-status-text {
+    display: none;
+  }
+
+  .user-profile-name {
+    display: none;
+  }
+
+  .leave-text {
+    display: none;
+  }
+
+  .leave-room-btn {
+    padding: 6px 8px;
+  }
+
   .lobby-card {
-    padding: 20px 14px;
+    padding: 24px 16px;
   }
 }
+
+/* ========================================================== */
+/* MOBILE PARTICIPANTS DROPDOWN CONTROLS                      */
+/* ========================================================== */
+
+.mobile-members-control-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background: var(--bg-card);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+}
+
+.mobile-permission-toggle-btn {
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-radius: var(--radius-sm);
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.mobile-permission-toggle-btn:hover {
+  opacity: 0.9;
+}
+
+/* ========================================================== */
+/* IN-APP TOAST NOTIFICATION SYSTEM                           */
+/* ========================================================== */
+
+.toast-portal-container {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 10000;
+  max-width: 380px;
+  width: calc(100% - 32px);
+  pointer-events: none;
+}
+
+.in-app-toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: rgba(18, 23, 34, 0.92);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6), 0 2px 6px rgba(0, 0, 0, 0.3);
+  color: #ffffff;
+  font-size: 13px;
+  line-height: 1.4;
+  animation: toastSlideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes toastSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-12px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.toast-icon-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.toast-message-text {
+  flex: 1;
+  font-weight: 500;
+  word-break: break-word;
+}
+
+.toast-dismiss-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  border: none;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.toast-dismiss-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+.toast-success {
+  border-left: 3px solid #10b981;
+}
+
+.toast-error {
+  border-left: 3px solid #ef4444;
+}
+
+.toast-info {
+  border-left: 3px solid #0ea5e9;
+}
+
+.toast-warn {
+  border-left: 3px solid #f59e0b;
+}
+
+@media (max-width: 480px) {
+  .toast-portal-container {
+    top: 12px;
+    right: 12px;
+    left: 12px;
+    width: auto;
+    max-width: none;
+  }
+}
+
+/* ========================================================== */
+/* MOBILE NAVIGATION DRAWER & SHEET                           */
+/* ========================================================== */
+
+.mobile-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 9999;
+  display: flex;
+  justify-content: flex-end;
+  animation: backdropFadeIn 0.2s ease;
+}
+
+@keyframes backdropFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.mobile-drawer-sheet {
+  width: 88vw;
+  max-width: 360px;
+  height: 100%;
+  background: var(--bg-surface);
+  border-left: 1px solid var(--border-strong);
+  display: flex;
+  flex-direction: column;
+  box-shadow: -10px 0 30px rgba(0, 0, 0, 0.8);
+  animation: sheetSlideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes sheetSlideIn {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+.mobile-drawer-header {
+  height: 52px;
+  min-height: 52px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.mobile-drawer-close-btn {
+  padding: 6px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mobile-drawer-close-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.mobile-drawer-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.mobile-drawer-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 14px;
+}
+
+.mobile-drawer-card-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.mobile-room-code-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mobile-code-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-surface);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+}
+
+.mobile-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.mobile-copy-btn:hover {
+  opacity: 0.9;
+}
+
+.mobile-control-switch-wrap {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  background: var(--bg-surface);
+  padding: 4px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+}
+
+.mobile-control-pill {
+  padding: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.mobile-control-pill.active {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.mobile-voice-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+}
+
+

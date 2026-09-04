@@ -1,6 +1,7 @@
 package video
 
 import (
+	"context"
 	"errors"
 	"math"
 	"time"
@@ -39,8 +40,8 @@ func (vs *VideoSyncer) CalculateCurrentPosition(state *model.VideoState) float64
 }
 
 // HandleAction processes a PLAY, PAUSE, SEEK, or RATE action from a user
-func (vs *VideoSyncer) HandleAction(actionType string, roomID string, userID string, isHost bool, position float64, rate float64) (*model.VideoState, error) {
-	room, err := vs.store.GetRoomByID(roomID)
+func (vs *VideoSyncer) HandleAction(ctx context.Context, actionType string, roomID string, userID string, isHost bool, position float64, rate float64) (*model.VideoState, error) {
+	room, err := vs.store.GetRoomByID(ctx, roomID)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +52,7 @@ func (vs *VideoSyncer) HandleAction(actionType string, roomID string, userID str
 	}
 
 	// Retrieve current state or create default
-	currentState, err := vs.store.GetVideoState(roomID)
+	currentState, err := vs.store.GetVideoState(ctx, roomID)
 	if err != nil {
 		currentState = &model.VideoState{
 			RoomID:    roomID,
@@ -97,7 +98,7 @@ func (vs *VideoSyncer) HandleAction(actionType string, roomID string, userID str
 		currentState.ChangedBy = userID
 	}
 
-	if err := vs.store.SetVideoState(currentState); err != nil {
+	if err := vs.store.SetVideoState(ctx, currentState); err != nil {
 		return nil, err
 	}
 
@@ -105,8 +106,8 @@ func (vs *VideoSyncer) HandleAction(actionType string, roomID string, userID str
 }
 
 // CheckSync calculates drift between client and authoritative server position
-func (vs *VideoSyncer) CheckSync(roomID string, clientPos float64) (*model.SyncCorrectionPayload, error) {
-	state, err := vs.store.GetVideoState(roomID)
+func (vs *VideoSyncer) CheckSync(ctx context.Context, roomID string, clientPos float64) (*model.SyncCorrectionPayload, error) {
+	state, err := vs.store.GetVideoState(ctx, roomID)
 	if err != nil {
 		return nil, err
 	}
